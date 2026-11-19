@@ -26,19 +26,19 @@ async function bulkTurnstileToken(){
 }
 async function bulkAutoReport(){
  let indicator=document.getElementById('bulkDiagStatus');
- if(indicator)indicator.textContent='Sending anonymised diagnostic report…';
+ if(indicator)indicator.textContent='Sending anonymised diagnostic report…';else bulkStatus('Sending anonymised diagnostic report…');
  try{
   let token=await bulkTurnstileToken();
-  let events=bulkState.logs.filter(e=>e.stage==='frame'||e.stage==='scan-error'||e.stage==='scan-finished'||e.stage==='video-metadata').slice(0,300);
-  let response=await fetch(BULK_DIAG_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:'0.10.3',turnstileToken:token,events})});
+  let events=bulkState.logs.filter(e=>e.stage==='frame'||e.stage==='scan-error'||e.stage==='scan-finished'||e.stage==='video-metadata').slice(0,120).map(e=>({time:e.time,stage:e.stage,frame:e.frame,seconds:e.seconds,error:e.error||e.barError,parsed:e.parsed,regions:e.regions?.map(r=>({region:r.region,confidence:r.confidence,error:r.error}))}));
+  let response=await fetch(BULK_DIAG_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:'0.10.6',turnstileToken:token,events})});
   if(!response.ok)throw Error('Server returned '+response.status);
-  if(indicator)indicator.textContent='Diagnostic report sent securely.';
- }catch(e){if(indicator)indicator.textContent='Automatic diagnostics not sent: '+e.message+'. Your scan results remain on this device.'}
+  if(indicator)indicator.textContent='Diagnostic report sent securely.';else bulkStatus('Diagnostic report sent securely.');
+ }catch(e){if(indicator)indicator.textContent='Automatic diagnostics not sent: '+e.message+'. Your scan results remain on this device.';else bulkStatus('Automatic diagnostics not sent: '+e.message)}
 }
 function bulkStatus(message){let e=document.getElementById('bulkVideoStatus');if(e)e.textContent=message}
 function bulkGuide(){
  let d=document.getElementById('modal');bulkState.cancel=true;bulkState.logs=[];bulkLog('guide-opened');
- d.innerHTML='<h2>🎥 Bulk appraisal importer</h2><p class="notice">Record Pokémon GO with iPhone Screen Recording. Keep Appraise open, swipe one Pokémon at a time and pause 2–3 seconds on each. Recordings are processed locally; original videos and frames are not uploaded. Anonymised recognition diagnostics are automatically submitted to private storage after scanning (verification may be required).</p><details><summary>How to record on iPhone</summary><ol><li>Open Control Centre (swipe down from the top-right).</li><li>Tap Screen Recording (circle icon), then wait 3 seconds. Add it in Control Centre if missing.</li><li>Switch to Pokémon GO, open a Pokémon and tap Appraise.</li><li>Swipe between Pokémon while keeping Appraise open, pausing 2–3 seconds each.</li><li>Stop recording using Control Centre. Return here and select the saved video.</li></ol></details><label>Choose screen recording from Photos<input type="file" id="bulkVideoFile" accept="video/*" onchange="bulkChoose(this)"></label><p class="muted" id="bulkVideoStatus">Choose a video to begin.</p><div class="row"><button type="button" id="bulkAnalyse" disabled onclick="bulkAnalyse()">Analyse video</button><button type="button" class="secondary" id="bulkCancel" onclick="bulkStop()">Cancel / close</button></div><div id="bulkResults"></div>';
+ d.innerHTML='<h2>🎥 Bulk appraisal importer</h2><p class="notice">Record Pokémon GO with iPhone Screen Recording. Keep Appraise open, swipe one Pokémon at a time and pause 2–3 seconds on each. Recordings are processed locally; original videos and frames are not uploaded. Anonymised recognition diagnostics are automatically submitted to private storage after scanning (verification may be required).</p><details><summary>How to record on iPhone</summary><ol><li>Open Control Centre (swipe down from the top-right).</li><li>Tap Screen Recording (circle icon), then wait 3 seconds. Add it in Control Centre if missing.</li><li>Switch to Pokémon GO, open a Pokémon and tap Appraise.</li><li>Swipe between Pokémon while keeping Appraise open, pausing 2–3 seconds each.</li><li>Stop recording using Control Centre. Return here and select the saved video.</li></ol></details><label>Choose screen recording from Photos<input type="file" id="bulkVideoFile" accept="video/*" onchange="bulkChoose(this)"></label><p class="muted" id="bulkVideoStatus">Choose a video to begin.</p><div class="row"><button type="button" id="bulkAnalyse" disabled onclick="bulkAnalyse()">Analyse video</button><button type="button" class="secondary" id="bulkCancel" onclick="bulkStop()">Cancel / close</button></div><p id="bulkDiagStatus" class="notice" role="status" aria-live="polite">Diagnostic reporting will start after analysis.</p><div id="bulkTurnstile"></div><div id="bulkResults"></div>';
  d.showModal()
 }
 function bulkChoose(input){
