@@ -3,10 +3,42 @@ let bulkState={file:null,rows:[],busy:false,cancel:false,videoUrl:null,logs:[]};
 function bulkLog(stage,details={}){bulkState.logs.push({time:new Date().toISOString(),stage,...details});if(bulkState.logs.length>1200)bulkState.logs.shift()}
 function bulkDownloadLogs(){let payload={app:'PokéCommand',version:'0.10.2',created:new Date().toISOString(),file:{name:bulkState.file?.name,size:bulkState.file?.size},events:bulkState.logs};let blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='pokecommand-ocr-debug-'+Date.now()+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),15000)}
 function bulkLogButton(){return '<button type="button" class="secondary" onclick="bulkDownloadLogs()">⬇ Export OCR diagnostic logs</button>'}
+const BULK_DIAG_ENDPOINT='https://pokecommand-diagnostics.tristram-b30.workers.dev/';
+const BULK_TURNSTILE_SITE_KEY='0x4AAAAAAGIMd12eVBssR0IZ';
+let bulkTurnstilePromise=null;
+function bulkLoadTurnstile(){
+ if(window.turnstile)return Promise.resolve();
+ if(bulkTurnstilePromise)return bulkTurnstilePromise;
+ bulkTurnstilePromise=new Promise((resolve,reject)=>{
+  let script=document.createElement('script');script.src='https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';script.async=true;
+  script.onload=resolve;script.onerror=()=>reject(Error('Turnstile unavailable'));document.head.appendChild(script)
+ });return bulkTurnstilePromise
+}
+async function bulkTurnstileToken(){
+ await bulkLoadTurnstile();
+ let holder=document.getElementById('bulkTurnstile');
+ if(!holder)throw Error('Verification container missing');
+ holder.style.display='block';
+ return await new Promise((resolve,reject)=>{
+  let done=false,timer=setTimeout(()=>{if(!done){done=true;reject(Error('Verification timed out'))}},60000);
+  try{window.turnstile.render(holder,{sitekey:BULK_TURNSTILE_SITE_KEY,appearance:'interaction-only',callback:token=>{if(!done){done=true;clearTimeout(timer);resolve(token)}},'error-callback':()=>{if(!done){done=true;clearTimeout(timer);reject(Error('Verification failed'))}}})}catch(e){clearTimeout(timer);reject(e)}
+ })
+}
+async function bulkAutoReport(){
+ let indicator=document.getElementById('bulkDiagStatus');
+ if(indicator)indicator.textContent='Sending anonymised diagnostic report…';
+ try{
+  let token=await bulkTurnstileToken();
+  let events=bulkState.logs.filter(e=>e.stage==='frame'||e.stage==='scan-error'||e.stage==='scan-finished'||e.stage==='video-metadata').slice(0,300);
+  let response=await fetch(BULK_DIAG_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:'0.10.3',turnstileToken:token,events})});
+  if(!response.ok)throw Error('Server returned '+response.status);
+  if(indicator)indicator.textContent='Diagnostic report sent securely.';
+ }catch(e){if(indicator)indicator.textContent='Automatic diagnostics not sent: '+e.message+'. Your scan results remain on this device.'}
+}
 function bulkStatus(message){let e=document.getElementById('bulkVideoStatus');if(e)e.textContent=message}
 function bulkGuide(){
  let d=document.getElementById('modal');bulkState.cancel=true;bulkState.logs=[];bulkLog('guide-opened');
- d.innerHTML='<h2>🎥 Bulk appraisal importer</h2><p class="notice">Record Pokémon GO with iPhone Screen Recording. Keep Appraise open, swipe one Pokémon at a time and pause 2–3 seconds on each. Recordings are processed locally in this browser, not uploaded.</p><details><summary>How to record on iPhone</summary><ol><li>Open Control Centre (swipe down from the top-right).</li><li>Tap Screen Recording (circle icon), then wait 3 seconds. Add it in Control Centre if missing.</li><li>Switch to Pokémon GO, open a Pokémon and tap Appraise.</li><li>Swipe between Pokémon while keeping Appraise open, pausing 2–3 seconds each.</li><li>Stop recording using Control Centre. Return here and select the saved video.</li></ol></details><label>Choose screen recording from Photos<input type="file" id="bulkVideoFile" accept="video/*" onchange="bulkChoose(this)"></label><p class="muted" id="bulkVideoStatus">Choose a video to begin.</p><div class="row"><button type="button" id="bulkAnalyse" disabled onclick="bulkAnalyse()">Analyse video</button><button type="button" class="secondary" id="bulkCancel" onclick="bulkStop()">Cancel / close</button></div><div id="bulkResults"></div>';
+ d.innerHTML='<h2>🎥 Bulk appraisal importer</h2><p class="notice">Record Pokémon GO with iPhone Screen Recording. Keep Appraise open, swipe one Pokémon at a time and pause 2–3 seconds on each. Recordings are processed locally; original videos and frames are not uploaded. Anonymised recognition diagnostics are automatically submitted to private storage after scanning (verification may be required).</p><details><summary>How to record on iPhone</summary><ol><li>Open Control Centre (swipe down from the top-right).</li><li>Tap Screen Recording (circle icon), then wait 3 seconds. Add it in Control Centre if missing.</li><li>Switch to Pokémon GO, open a Pokémon and tap Appraise.</li><li>Swipe between Pokémon while keeping Appraise open, pausing 2–3 seconds each.</li><li>Stop recording using Control Centre. Return here and select the saved video.</li></ol></details><label>Choose screen recording from Photos<input type="file" id="bulkVideoFile" accept="video/*" onchange="bulkChoose(this)"></label><p class="muted" id="bulkVideoStatus">Choose a video to begin.</p><div class="row"><button type="button" id="bulkAnalyse" disabled onclick="bulkAnalyse()">Analyse video</button><button type="button" class="secondary" id="bulkCancel" onclick="bulkStop()">Cancel / close</button></div><div id="bulkResults"></div>';
  d.showModal()
 }
 function bulkChoose(input){
@@ -92,8 +124,8 @@ async function bulkAnalyse(){
   }
   if(state.cancel)throw Error('Analysis cancelled');
   bulkLog('scan-finished',{frames:count,candidates:state.rows.length});bulkStatus('Scan finished: '+state.rows.length+' possible Pokémon. Select and correct entries before importing.');
-  bulkReview()
- }catch(e){bulkLog('scan-error',{error:e.message});bulkStatus('Video analysis stopped: '+e.message)}finally{
+  bulkReview();void bulkAutoReport()
+ }catch(e){bulkLog('scan-error',{error:e.message});bulkStatus('Video analysis stopped: '+e.message);void bulkAutoReport()}finally{
   video.pause();video.removeAttribute('src');video.load();URL.revokeObjectURL(url);state.videoUrl=null;state.busy=false;
   let b=document.getElementById('bulkAnalyse');if(b)b.disabled=false
  }
