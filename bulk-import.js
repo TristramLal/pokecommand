@@ -35,11 +35,11 @@ function bulkKnownSpecies(raw){
  return [...new Set(hits)].length===1?hits[0]:''
 }
 function bulkParseText(raw){
- let cp=raw.match(/\bC\s*P\s*([1-9][\d,]{1,5})\b/i);
+ let cp=raw.match(/\bC\s*P\s*([1-9][\d,]{1,5})\b/i)||raw.match(/\bCP\s*([1-9][\d,]{1,5})/i);
  let hp=raw.match(/\b(\d{1,4})\s*\/\s*\d{1,4}\s*HP\b/i);
  return {name:bulkKnownSpecies(raw),cp:cp?cp[1].replace(/,/g,''):'',currentHP:hp?hp[1]:''}
 }
-function bulkKey(row){return [String(row.name||'').toLowerCase(),row.cp,row.atk,row.def,row.hp].join('|')}
+function bulkKey(row){return [String(row.name||'').toLowerCase(),row.cp].join('|')}
 function bulkFileFromCanvas(canvas){return new Promise((resolve,reject)=>canvas.toBlob(blob=>blob?resolve(blob):reject(Error('Could not capture frame')),'image/jpeg',.86))}
 async function bulkAnalyse(){
  if(bulkState.busy||!bulkState.file)return;
@@ -51,8 +51,8 @@ async function bulkAnalyse(){
   bulkStatus('Loading OCR engine…');await bulkLoadOCR();
   let ready=bulkVideoReady(video,'loadedmetadata');video.src=url;video.load();await ready;
   if(!Number.isFinite(video.duration)||video.duration<=0)throw Error('Video duration unavailable');
-  let interval=2.5,count=Math.min(100,Math.ceil(video.duration/interval));
-  if(video.duration>250)bulkStatus('Long recording: only the first 250 seconds will be scanned. Split longer recordings into shorter clips.');
+  let interval=1.5,count=Math.min(160,Math.ceil(video.duration/interval));
+  if(video.duration>240)bulkStatus('Long recording: only the first 240 seconds will be scanned. Split longer recordings into shorter clips.');
   let canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
   if(!ctx)throw Error('Canvas unavailable');
   let w=video.videoWidth,h=video.videoHeight;if(!w||!h)throw Error('Could not read video dimensions');
@@ -67,23 +67,23 @@ async function bulkAnalyse(){
    ctx.drawImage(video,0,0,canvas.width,canvas.height);
    let blob=await bulkFileFromCanvas(canvas);
    bulkStatus('Analysing frame '+(i+1)+' / '+count+' ('+Math.round(t)+'s). Found '+state.rows.length+' candidates…');
-   let bars;try{bars=await readAppraisalBars(blob)}catch(e){continue}
+   let bars={atk:'',def:'',hp:''};try{bars=await readAppraisalBars(blob)}catch(e){}
    let raw='';
    try{let result=await Tesseract.recognize(blob,'eng');raw=result.data.text||''}catch(e){continue}
    let parsed=bulkParseText(raw);
    if(!parsed.name&&!parsed.cp)continue;
-   let row={...parsed,...bars,time:t,blob,raw,include:!!parsed.name&&!!parsed.cp};
+   let row={...parsed,...bars,time:t,blob,raw,include:false};
    let key=bulkKey(row);
-   if(key===lastKey&&t-lastAt<8)continue;
+   if(key===lastKey&&t-lastAt<12)continue;
    lastKey=key;lastAt=t;
    // Merge repeated consecutive frames only; allow identical species/CP/IV in separate sections.
    let previous=state.rows[state.rows.length-1];
-   if(previous&&bulkKey(previous)===key&&t-previous.time<8)continue;
+   if(previous&&bulkKey(previous)===key&&t-previous.time<12)continue;
    state.rows.push(row);
    if(state.rows.length>=100)break
   }
   if(state.cancel)throw Error('Analysis cancelled');
-  bulkStatus('Scan finished: '+state.rows.length+' candidates. Review every field before importing.');
+  bulkStatus('Scan finished: '+state.rows.length+' possible Pokémon. Select and correct entries before importing.');
   bulkReview()
  }catch(e){bulkStatus('Video analysis stopped: '+e.message)}finally{
   video.pause();video.removeAttribute('src');video.load();URL.revokeObjectURL(url);state.videoUrl=null;state.busy=false;
@@ -93,8 +93,8 @@ async function bulkAnalyse(){
 function bulkReview(){
  let root=document.getElementById('bulkResults');if(!root)return;
  let rows=bulkState.rows;
- if(!rows.length){root.innerHTML='<p class="notice">No complete appraisal frames were recognised. Try pausing longer on each Pokémon and ensure the appraisal bars and CP are visible.</p>';return}
- root.innerHTML='<h3>Review '+rows.length+' candidates</h3><p class="notice">Recognition is experimental. Names, CP and IVs may be incorrect. Uncertain entries are unchecked. Review each frame before importing. No existing Pokémon will be overwritten.</p>'+
+ if(!rows.length){root.innerHTML='<p class="notice">No readable CP or species was recognised. Try pausing longer on each Pokémon. We will add a manual frame picker next if needed.</p>';return}
+ root.innerHTML='<h3>Review '+rows.length+' candidates</h3><p class="notice">Recognition is experimental. Names, CP and IVs may be incorrect or blank. All entries are unchecked until you review them. Review each frame before importing. No existing Pokémon will be overwritten.</p>'+
  rows.map((p,i)=>'<div class="bulk-row"><label><input type="checkbox" data-bulk-include="'+i+'" '+(p.include?'checked':'')+'> Import this Pokémon</label><small>Frame at '+p.time.toFixed(1)+'s</small><div class="bulk-grid">'+
  [['name','Species','text'],['cp','CP','number'],['currentHP','HP','number'],['atk','Attack IV','number'],['def','Defence IV','number'],['hp','HP IV','number']].map(([key,label,type])=>'<label>'+label+'<input data-bulk-row="'+i+'" data-bulk-field="'+key+'" type="'+type+'" '+(key==='atk'||key==='def'||key==='hp'?'min="0" max="15"':'')+' value="'+esc(p[key]??'')+'"></label>').join('')+'</div><button class="secondary" type="button" onclick="bulkFramePreview('+i+')">View captured frame</button></div>').join('')+
  '<div class="row"><button type="button" onclick="bulkCommit()">Import selected Pokémon</button><button type="button" class="secondary" onclick="bulkStop()">Cancel</button></div>'
