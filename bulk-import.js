@@ -29,8 +29,8 @@ async function bulkAutoReport(){
  if(indicator)indicator.textContent='Sending anonymised diagnostic report…';else bulkStatus('Sending anonymised diagnostic report…');
  try{
   let token=await bulkTurnstileToken();
-  let events=bulkState.logs.filter(e=>e.stage==='frame'||e.stage==='scan-error'||e.stage==='scan-finished'||e.stage==='video-metadata').slice(0,120).map(e=>({time:e.time,stage:e.stage,frame:e.frame,seconds:e.seconds,error:e.error||e.barError,parsed:e.parsed,regions:e.regions?.map(r=>({region:r.region,confidence:r.confidence,error:r.error}))}));
-  let response=await fetch(BULK_DIAG_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:'0.10.6',turnstileToken:token,events})});
+  let events=bulkState.logs.filter(e=>e.stage==='frame'||e.stage==='scan-error'||e.stage==='scan-finished'||e.stage==='video-metadata'||e.stage==='scan-summary').slice(0,120).map(e=>({time:e.time,stage:e.stage,frame:e.frame,seconds:e.seconds,error:e.error||e.barError,parsed:e.parsed,regions:e.regions?.map(r=>({region:r.region,confidence:r.confidence,error:r.error}))}));
+  let response=await fetch(BULK_DIAG_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:'0.10.7',turnstileToken:token,events})});
   if(!response.ok)throw Error('Server returned '+response.status);
   if(indicator)indicator.textContent='Diagnostic report sent securely.';else bulkStatus('Diagnostic report sent securely.');
  }catch(e){if(indicator)indicator.textContent='Automatic diagnostics not sent: '+e.message+'. Your scan results remain on this device.';else bulkStatus('Automatic diagnostics not sent: '+e.message)}
@@ -91,37 +91,54 @@ async function bulkAnalyse(){
   bulkStatus('Loading OCR engine…');await bulkLoadOCR();
   let ready=bulkVideoReady(video,'loadedmetadata');video.src=url;video.load();await ready;
   if(!Number.isFinite(video.duration)||video.duration<=0)throw Error('Video duration unavailable');bulkLog('video-metadata',{duration:video.duration,width:video.videoWidth,height:video.videoHeight});
-  let interval=2,count=Math.min(120,Math.ceil(video.duration/interval));
-  if(video.duration>240)bulkStatus('Long recording: only the first 240 seconds will be scanned. Split longer recordings into shorter clips.');
+  // Examine the video densely, but run expensive OCR only when the picture settles.
+  const interval=.4,count=Math.min(900,Math.ceil(video.duration/interval));
+  if(video.duration>360)bulkStatus('Long recording: scanning the first six minutes. Split longer recordings.');
   let canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
   if(!ctx)throw Error('Canvas unavailable');
   let w=video.videoWidth,h=video.videoHeight;if(!w||!h)throw Error('Could not read video dimensions');
-  // Scale large iPhone recordings to reduce memory use while retaining enough resolution for IV bars.
   let scale=Math.min(1,1080/w,1920/h);canvas.width=Math.round(w*scale);canvas.height=Math.round(h*scale);
-  let lastKey='',lastAt=-10,seen=new Map();
+  let probe=document.createElement('canvas');probe.width=32;probe.height=56;
+  let probeCtx=probe.getContext('2d',{willReadFrequently:true});
+  let previousPixels=null,stableFrames=0,lastOCR=-10,lastKey='',lastAt=-10,ocrAttempts=0,skippedMotion=0;
   for(let i=0;i<count;i++){
    if(state.cancel)throw Error('Analysis cancelled');
-   let t=Math.min(video.duration-.05,i*interval+.7);
+   let t=Math.min(video.duration-.05,i*interval+.1);
    if(t<0)continue;
    let seek=bulkVideoReady(video,'seeked');video.currentTime=t;await seek;
    ctx.drawImage(video,0,0,canvas.width,canvas.height);
+   probeCtx.drawImage(canvas,0,0,probe.width,probe.height);
+   let pixels=probeCtx.getImageData(0,0,probe.width,probe.height).data;
+   let change=0;
+   if(previousPixels){for(let p=0;p<pixels.length;p+=16){change+=Math.abs(pixels[p]-previousPixels[p])+Math.abs(pixels[p+1]-previousPixels[p+1])+Math.abs(pixels[p+2]-previousPixels[p+2])}change/=Math.ceil(pixels.length/16)*3}
+   let still=previousPixels&&change<10;
+   stableFrames=still?stableFrames+1:0;
+   previousPixels=new Uint8ClampedArray(pixels);
+   bulkStatus('Checking video '+Math.round(t)+'s / '+Math.round(Math.min(video.duration,360))+'s · '+state.rows.length+' recognised · '+ocrAttempts+' OCR checks');
+   if(stableFrames<1){skippedMotion++;continue}
+   // Check shortly after a stable screen appears; retry periodically if it stays visible.
+   if(t-lastOCR<2.2)continue;
+   lastOCR=t;ocrAttempts++;
    let blob=await bulkFileFromCanvas(canvas);
-   bulkStatus('Analysing frame '+(i+1)+' / '+count+' ('+Math.round(t)+'s). Found '+state.rows.length+' candidates…');
-   let bars={atk:'',def:'',hp:''},barError='';try{bars=await readAppraisalBars(blob)}catch(e){barError=e.message}
+   let bars={atk:'',def:'',hp:''},barError='';
+   try{bars=await readAppraisalBars(blob)}catch(e){barError=e.message}
    let raw='',regions=[];
    try{regions=await bulkOCRRegions(canvas);raw=regions.map(x=>x.text||'').join('\n')}catch(e){bulkLog('ocr-error',{frame:i,seconds:t,error:e.message});continue}
-   let parsed=bulkParseText(raw);bulkLog('frame',{frame:i,seconds:t,barError,bars,parsed,regions:regions.map(x=>({region:x.region,confidence:x.confidence,error:x.error,text:(x.text||'').slice(0,1400)}))});
-   if(!parsed.name&&!parsed.cp){if(i%5!==0)continue;parsed={name:'',cp:'',currentHP:''}}
+   let parsed=bulkParseText(raw);
+   let validBars=['atk','def','hp'].filter(k=>bars[k]!==''&&bars[k]!==null&&bars[k]!==undefined).length;
+   let confident=!!parsed.cp&&(!!parsed.name||validBars>=2);
+   bulkLog('frame',{frame:i,seconds:t,stable:true,change:+change.toFixed(2),accepted:confident,barError,bars,parsed,regions:regions.map(x=>({region:x.region,confidence:x.confidence,error:x.error,text:(x.text||'').slice(0,1400)}))});
+   if(!confident)continue;
    let row={...parsed,...bars,time:t,blob,raw,include:false};
-   let key=bulkKey(row);if(!parsed.cp&&!parsed.name)key='unreadable-'+Math.floor(i/5);
+   let key=bulkKey(row);
    if(key===lastKey&&t-lastAt<12)continue;
-   lastKey=key;lastAt=t;
-   // Merge repeated consecutive frames only; allow identical species/CP/IV in separate sections.
    let previous=state.rows[state.rows.length-1];
    if(previous&&bulkKey(previous)===key&&t-previous.time<12)continue;
+   lastKey=key;lastAt=t;
    state.rows.push(row);bulkLog('candidate-kept',{frame:i,seconds:t,name:row.name,cp:row.cp,ivs:[row.atk,row.def,row.hp]});
    if(state.rows.length>=100)break
   }
+  bulkLog('scan-summary',{samples:count,ocrAttempts,skippedMotion,candidates:state.rows.length});
   if(state.cancel)throw Error('Analysis cancelled');
   bulkLog('scan-finished',{frames:count,candidates:state.rows.length});bulkStatus('Scan finished: '+state.rows.length+' possible Pokémon. Select and correct entries before importing.');
   bulkReview();void bulkAutoReport()
@@ -133,7 +150,7 @@ async function bulkAnalyse(){
 function bulkReview(){
  let root=document.getElementById('bulkResults');if(!root)return;
  let rows=bulkState.rows;
- if(!rows.length){root.innerHTML='<p class="notice">No readable CP or species was recognised. Try pausing longer on each Pokémon. We will add a manual frame picker next if needed.</p>';return}
+ if(!rows.length){root.innerHTML='<p class="notice">No confident Pokémon entries were recognised. The scanner checks for stable frames and requires a readable CP plus a species name or appraisal bars.</p>';return}
  root.innerHTML='<h3>Review '+rows.length+' candidates</h3><p class="notice">Recognition is experimental. Names, CP and IVs may be incorrect or blank. All entries are unchecked until you review them. Review each frame before importing. No existing Pokémon will be overwritten.</p>'+
  rows.map((p,i)=>'<div class="bulk-row"><label><input type="checkbox" data-bulk-include="'+i+'" '+(p.include?'checked':'')+'> Import this Pokémon</label><small>Frame at '+p.time.toFixed(1)+'s</small><div class="bulk-grid">'+
  [['name','Species','text'],['cp','CP','number'],['currentHP','HP','number'],['atk','Attack IV','number'],['def','Defence IV','number'],['hp','HP IV','number']].map(([key,label,type])=>'<label>'+label+'<input data-bulk-row="'+i+'" data-bulk-field="'+key+'" type="'+type+'" '+(key==='atk'||key==='def'||key==='hp'?'min="0" max="15"':'')+' value="'+esc(p[key]??'')+'"></label>').join('')+'</div><button class="secondary" type="button" onclick="bulkFramePreview('+i+')">View captured frame</button></div>').join('')+
