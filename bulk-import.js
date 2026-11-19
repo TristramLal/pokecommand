@@ -71,9 +71,9 @@ async function bulkAnalyse(){
    let raw='';
    try{let result=await Tesseract.recognize(blob,'eng');raw=result.data.text||''}catch(e){continue}
    let parsed=bulkParseText(raw);
-   if(!parsed.name&&!parsed.cp)continue;
+   if(!parsed.name&&!parsed.cp){if(i%5!==0)continue;parsed={name:'',cp:'',currentHP:''}}
    let row={...parsed,...bars,time:t,blob,raw,include:false};
-   let key=bulkKey(row);
+   let key=bulkKey(row);if(!parsed.cp&&!parsed.name)key='unreadable-'+Math.floor(i/5);
    if(key===lastKey&&t-lastAt<12)continue;
    lastKey=key;lastAt=t;
    // Merge repeated consecutive frames only; allow identical species/CP/IV in separate sections.
