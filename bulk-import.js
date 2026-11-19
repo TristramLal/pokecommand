@@ -42,6 +42,11 @@ function bulkParseText(raw){
  let hp=raw.match(/\b(\d{1,4})\s*\/\s*\d{1,4}\s*HP\b/i);
  return {name:bulkKnownSpecies(raw),cp:cp?cp[1].replace(/,/g,''):'',currentHP:hp?hp[1]:''}
 }
+async function bulkOCRRegions(canvas){
+ let w=canvas.width,h=canvas.height,regions=[['full',0,0,w,h],['header',0,Math.round(h*.035),w,Math.round(h*.27)],['appraisal',0,Math.round(h*.48),w,Math.round(h*.45)]],out=[];
+ for(let [label,x,y,cw,ch] of regions){let c=document.createElement('canvas');c.width=Math.min(1200,Math.round(cw*1.5));c.height=Math.round(ch*c.width/cw);let ctx=c.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);ctx.drawImage(canvas,x,y,cw,ch,0,0,c.width,c.height);try{let result=await Tesseract.recognize(c,'eng');out.push({region:label,text:result.data.text||'',confidence:result.data.confidence})}catch(e){out.push({region:label,error:e.message})}}
+ return out
+}
 function bulkKey(row){return [String(row.name||'').toLowerCase(),row.cp].join('|')}
 function bulkFileFromCanvas(canvas){return new Promise((resolve,reject)=>canvas.toBlob(blob=>blob?resolve(blob):reject(Error('Could not capture frame')),'image/jpeg',.86))}
 async function bulkAnalyse(){
@@ -54,7 +59,7 @@ async function bulkAnalyse(){
   bulkStatus('Loading OCR engine…');await bulkLoadOCR();
   let ready=bulkVideoReady(video,'loadedmetadata');video.src=url;video.load();await ready;
   if(!Number.isFinite(video.duration)||video.duration<=0)throw Error('Video duration unavailable');bulkLog('video-metadata',{duration:video.duration,width:video.videoWidth,height:video.videoHeight});
-  let interval=1.5,count=Math.min(160,Math.ceil(video.duration/interval));
+  let interval=2,count=Math.min(120,Math.ceil(video.duration/interval));
   if(video.duration>240)bulkStatus('Long recording: only the first 240 seconds will be scanned. Split longer recordings into shorter clips.');
   let canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
   if(!ctx)throw Error('Canvas unavailable');
@@ -71,9 +76,9 @@ async function bulkAnalyse(){
    let blob=await bulkFileFromCanvas(canvas);
    bulkStatus('Analysing frame '+(i+1)+' / '+count+' ('+Math.round(t)+'s). Found '+state.rows.length+' candidates…');
    let bars={atk:'',def:'',hp:''},barError='';try{bars=await readAppraisalBars(blob)}catch(e){barError=e.message}
-   let raw='';
-   try{let result=await Tesseract.recognize(blob,'eng');raw=result.data.text||''}catch(e){bulkLog('ocr-error',{frame:i,seconds:t,error:e.message});continue}
-   let parsed=bulkParseText(raw);bulkLog('frame',{frame:i,seconds:t,barError,bars,parsed,ocrText:raw.slice(0,2500)});
+   let raw='',regions=[];
+   try{regions=await bulkOCRRegions(canvas);raw=regions.map(x=>x.text||'').join('\n')}catch(e){bulkLog('ocr-error',{frame:i,seconds:t,error:e.message});continue}
+   let parsed=bulkParseText(raw);bulkLog('frame',{frame:i,seconds:t,barError,bars,parsed,regions:regions.map(x=>({region:x.region,confidence:x.confidence,error:x.error,text:(x.text||'').slice(0,1400)}))});
    if(!parsed.name&&!parsed.cp){if(i%5!==0)continue;parsed={name:'',cp:'',currentHP:''}}
    let row={...parsed,...bars,time:t,blob,raw,include:false};
    let key=bulkKey(row);if(!parsed.cp&&!parsed.name)key='unreadable-'+Math.floor(i/5);
