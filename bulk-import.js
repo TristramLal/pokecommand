@@ -1,20 +1,23 @@
 /* PokéCommand local video appraisal importer — v0.10.0 */
-let bulkState={file:null,rows:[],busy:false,cancel:false,videoUrl:null};
+let bulkState={file:null,rows:[],busy:false,cancel:false,videoUrl:null,logs:[]};
+function bulkLog(stage,details={}){bulkState.logs.push({time:new Date().toISOString(),stage,...details});if(bulkState.logs.length>1200)bulkState.logs.shift()}
+function bulkDownloadLogs(){let payload={app:'PokéCommand',version:'0.10.2',created:new Date().toISOString(),file:{name:bulkState.file?.name,size:bulkState.file?.size},events:bulkState.logs};let blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='pokecommand-ocr-debug-'+Date.now()+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),15000)}
+function bulkLogButton(){return '<button type="button" class="secondary" onclick="bulkDownloadLogs()">⬇ Export OCR diagnostic logs</button>'}
 function bulkStatus(message){let e=document.getElementById('bulkVideoStatus');if(e)e.textContent=message}
 function bulkGuide(){
- let d=document.getElementById('modal');bulkState.cancel=true;
+ let d=document.getElementById('modal');bulkState.cancel=true;bulkState.logs=[];bulkLog('guide-opened');
  d.innerHTML='<h2>🎥 Bulk appraisal importer</h2><p class="notice">Record Pokémon GO with iPhone Screen Recording. Keep Appraise open, swipe one Pokémon at a time and pause 2–3 seconds on each. Recordings are processed locally in this browser, not uploaded.</p><details><summary>How to record on iPhone</summary><ol><li>Open Control Centre (swipe down from the top-right).</li><li>Tap Screen Recording (circle icon), then wait 3 seconds. Add it in Control Centre if missing.</li><li>Switch to Pokémon GO, open a Pokémon and tap Appraise.</li><li>Swipe between Pokémon while keeping Appraise open, pausing 2–3 seconds each.</li><li>Stop recording using Control Centre. Return here and select the saved video.</li></ol></details><label>Choose screen recording from Photos<input type="file" id="bulkVideoFile" accept="video/*" onchange="bulkChoose(this)"></label><p class="muted" id="bulkVideoStatus">Choose a video to begin.</p><div class="row"><button type="button" id="bulkAnalyse" disabled onclick="bulkAnalyse()">Analyse video</button><button type="button" class="secondary" id="bulkCancel" onclick="bulkStop()">Cancel / close</button></div><div id="bulkResults"></div>';
  d.showModal()
 }
 function bulkChoose(input){
  let file=input.files&&input.files[0];if(!file)return;
  if(!file.type.startsWith('video/')&&!/\.(mov|mp4|m4v|webm)$/i.test(file.name)){bulkStatus('Choose a screen recording video.');return}
- bulkState.file=file;bulkState.rows=[];bulkState.cancel=false;
+ bulkState.file=file;bulkState.rows=[];bulkState.cancel=false;bulkLog('video-selected',{name:file.name,size:file.size,type:file.type});
  document.getElementById('bulkAnalyse').disabled=false;
  document.getElementById('bulkResults').innerHTML='';
  bulkStatus('Ready: '+file.name+' ('+(file.size/1048576).toFixed(1)+' MB). Tap Analyse video.')
 }
-function bulkStop(){bulkState.cancel=true;let d=document.getElementById('modal');if(d.open)d.close()}
+function bulkStop(){bulkLog('user-closed');bulkState.cancel=true;let d=document.getElementById('modal');if(d.open)d.close()}
 async function bulkLoadOCR(){
  if(window.Tesseract)return;
  await new Promise((resolve,reject)=>{let el=document.createElement('script');el.src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';el.onload=resolve;el.onerror=()=>reject(Error('OCR library could not load. Check your connection.'));document.head.appendChild(el)})
@@ -23,13 +26,13 @@ function bulkVideoReady(video,event){return new Promise((resolve,reject)=>{let t
 function bulkKnownSpecies(raw){
  let lines=raw.split(/\n/).map(x=>x.replace(/[^A-Za-z0-9 '\-♀♂]/g,' ').trim()).filter(Boolean);
  let names=new Map();
- for(let p of data.pokemon)if(p.name)names.set(p.name.toLowerCase(),p.name);
+ for(let p of data.pokemon){if(p.name)names.set(p.name.toLowerCase(),p.name);if(p.nickname&&p.name)names.set(p.nickname.toLowerCase(),p.name)}
  for(let r of baseStatsDB?.records||[])if(r.name)names.set(r.name.toLowerCase(),r.name);
  for(let name of Object.keys(dexMap))names.set(name.toLowerCase(),name);
  let hits=[];
  for(let line of lines){
   let normalized=line.toLowerCase().replace(/\s+/g,' ');
-  if(names.has(normalized))hits.push(names.get(normalized));
+  if(names.has(normalized))hits.push(names.get(normalized));for(let [key,species] of names){if(key.length>=4&&(normalized.includes('your '+key)||normalized.includes('the '+key)||normalized===' '+key))hits.push(species)}
   // Some screenshots contain nickname on top and species near the appraisal text.
  }
  return [...new Set(hits)].length===1?hits[0]:''
@@ -43,14 +46,14 @@ function bulkKey(row){return [String(row.name||'').toLowerCase(),row.cp].join('|
 function bulkFileFromCanvas(canvas){return new Promise((resolve,reject)=>canvas.toBlob(blob=>blob?resolve(blob):reject(Error('Could not capture frame')),'image/jpeg',.86))}
 async function bulkAnalyse(){
  if(bulkState.busy||!bulkState.file)return;
- let state=bulkState;state.busy=true;state.cancel=false;state.rows=[];
+ let state=bulkState;state.busy=true;state.cancel=false;state.rows=[];bulkLog('scan-start',{filename:state.file.name});
  let button=document.getElementById('bulkAnalyse');if(button)button.disabled=true;
  let video=document.createElement('video');video.preload='auto';video.muted=true;video.playsInline=true;
  let url=URL.createObjectURL(state.file);state.videoUrl=url;
  try{
   bulkStatus('Loading OCR engine…');await bulkLoadOCR();
   let ready=bulkVideoReady(video,'loadedmetadata');video.src=url;video.load();await ready;
-  if(!Number.isFinite(video.duration)||video.duration<=0)throw Error('Video duration unavailable');
+  if(!Number.isFinite(video.duration)||video.duration<=0)throw Error('Video duration unavailable');bulkLog('video-metadata',{duration:video.duration,width:video.videoWidth,height:video.videoHeight});
   let interval=1.5,count=Math.min(160,Math.ceil(video.duration/interval));
   if(video.duration>240)bulkStatus('Long recording: only the first 240 seconds will be scanned. Split longer recordings into shorter clips.');
   let canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
@@ -67,10 +70,10 @@ async function bulkAnalyse(){
    ctx.drawImage(video,0,0,canvas.width,canvas.height);
    let blob=await bulkFileFromCanvas(canvas);
    bulkStatus('Analysing frame '+(i+1)+' / '+count+' ('+Math.round(t)+'s). Found '+state.rows.length+' candidates…');
-   let bars={atk:'',def:'',hp:''};try{bars=await readAppraisalBars(blob)}catch(e){}
+   let bars={atk:'',def:'',hp:''},barError='';try{bars=await readAppraisalBars(blob)}catch(e){barError=e.message}
    let raw='';
-   try{let result=await Tesseract.recognize(blob,'eng');raw=result.data.text||''}catch(e){continue}
-   let parsed=bulkParseText(raw);
+   try{let result=await Tesseract.recognize(blob,'eng');raw=result.data.text||''}catch(e){bulkLog('ocr-error',{frame:i,seconds:t,error:e.message});continue}
+   let parsed=bulkParseText(raw);bulkLog('frame',{frame:i,seconds:t,barError,bars,parsed,ocrText:raw.slice(0,2500)});
    if(!parsed.name&&!parsed.cp){if(i%5!==0)continue;parsed={name:'',cp:'',currentHP:''}}
    let row={...parsed,...bars,time:t,blob,raw,include:false};
    let key=bulkKey(row);if(!parsed.cp&&!parsed.name)key='unreadable-'+Math.floor(i/5);
@@ -79,13 +82,13 @@ async function bulkAnalyse(){
    // Merge repeated consecutive frames only; allow identical species/CP/IV in separate sections.
    let previous=state.rows[state.rows.length-1];
    if(previous&&bulkKey(previous)===key&&t-previous.time<12)continue;
-   state.rows.push(row);
+   state.rows.push(row);bulkLog('candidate-kept',{frame:i,seconds:t,name:row.name,cp:row.cp,ivs:[row.atk,row.def,row.hp]});
    if(state.rows.length>=100)break
   }
   if(state.cancel)throw Error('Analysis cancelled');
-  bulkStatus('Scan finished: '+state.rows.length+' possible Pokémon. Select and correct entries before importing.');
+  bulkLog('scan-finished',{frames:count,candidates:state.rows.length});bulkStatus('Scan finished: '+state.rows.length+' possible Pokémon. Select and correct entries before importing.');
   bulkReview()
- }catch(e){bulkStatus('Video analysis stopped: '+e.message)}finally{
+ }catch(e){bulkLog('scan-error',{error:e.message});bulkStatus('Video analysis stopped: '+e.message)}finally{
   video.pause();video.removeAttribute('src');video.load();URL.revokeObjectURL(url);state.videoUrl=null;state.busy=false;
   let b=document.getElementById('bulkAnalyse');if(b)b.disabled=false
  }
@@ -112,7 +115,7 @@ async function bulkCommit(){
  }
  if(errors.length){alert(errors.join('\n'));return}
  if(!rows.length){alert('Select at least one complete Pokémon.');return}
- if(!confirm('Add '+rows.length+' Pokémon to your collection? Existing entries will remain unchanged.'))return;
+ if(!confirm('Add '+rows.length+' Pokémon to your collection? Existing entries will remain unchanged.'))return;bulkLog('import-confirmed',{count:rows.length});
  bulkState.busy=true;let added=[];
  try{
   for(let {p,frame} of rows){
