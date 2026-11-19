@@ -30,7 +30,7 @@ async function bulkAutoReport(){
  try{
   let token=await bulkTurnstileToken();
   let events=bulkState.logs.filter(e=>e.stage==='frame'||e.stage==='scan-error'||e.stage==='scan-finished'||e.stage==='video-metadata'||e.stage==='scan-summary').slice(0,120).map(e=>({time:e.time,stage:e.stage,frame:e.frame,seconds:e.seconds,error:e.error||e.barError,parsed:e.parsed,regions:e.regions?.map(r=>({region:r.region,confidence:r.confidence,error:r.error}))}));
-  let response=await fetch(BULK_DIAG_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:'0.10.7',turnstileToken:token,events})});
+  let response=await fetch(BULK_DIAG_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:'0.10.8',turnstileToken:token,events})});
   if(!response.ok)throw Error('Server returned '+response.status);
   if(indicator)indicator.textContent='Diagnostic report sent securely.';else bulkStatus('Diagnostic report sent securely.');
  }catch(e){if(indicator)indicator.textContent='Automatic diagnostics not sent: '+e.message+'. Your scan results remain on this device.';else bulkStatus('Automatic diagnostics not sent: '+e.message)}
@@ -79,6 +79,16 @@ async function bulkOCRRegions(canvas){
  for(let [label,x,y,cw,ch] of regions){let c=document.createElement('canvas');c.width=Math.min(1200,Math.round(cw*1.5));c.height=Math.round(ch*c.width/cw);let ctx=c.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);ctx.drawImage(canvas,x,y,cw,ch,0,0,c.width,c.height);try{let result=await Tesseract.recognize(c,'eng');out.push({region:label,text:result.data.text||'',confidence:result.data.confidence})}catch(e){out.push({region:label,error:e.message})}}
  return out
 }
+async function bulkReadCPHeader(canvas){
+ let w=canvas.width,h=canvas.height,c=document.createElement('canvas');
+ c.width=Math.round(w*1.8);c.height=Math.round(h*.16*1.8);
+ let ctx=c.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);
+ ctx.drawImage(canvas,Math.round(w*.18),Math.round(h*.025),Math.round(w*.64),Math.round(h*.16),0,0,c.width,c.height);
+ let result=await Tesseract.recognize(c,'eng');
+ let raw=(result.data.text||'').replace(/[, ](?=\\d)/g,'');
+ let m=raw.match(/C\\s*P\\s*([1-9]\\d{2,4})/i);
+ return m?m[1]:'';
+}
 function bulkKey(row){return [String(row.name||'').toLowerCase(),row.cp].join('|')}
 function bulkFileFromCanvas(canvas){return new Promise((resolve,reject)=>canvas.toBlob(blob=>blob?resolve(blob):reject(Error('Could not capture frame')),'image/jpeg',.86))}
 async function bulkAnalyse(){
@@ -125,6 +135,7 @@ async function bulkAnalyse(){
    let raw='',regions=[];
    try{regions=await bulkOCRRegions(canvas);raw=regions.map(x=>x.text||'').join('\n')}catch(e){bulkLog('ocr-error',{frame:i,seconds:t,error:e.message});continue}
    let parsed=bulkParseText(raw);
+   if(!parsed.cp){try{parsed.cp=await bulkReadCPHeader(canvas)}catch(e){bulkLog('cp-ocr-error',{frame:i,error:e.message})}}
    let validBars=['atk','def','hp'].filter(k=>bars[k]!==''&&bars[k]!==null&&bars[k]!==undefined).length;
    let confident=!!parsed.cp&&(!!parsed.name||validBars>=2);
    bulkLog('frame',{frame:i,seconds:t,stable:true,change:+change.toFixed(2),accepted:confident,barError,bars,parsed,regions:regions.map(x=>({region:x.region,confidence:x.confidence,error:x.error,text:(x.text||'').slice(0,1400)}))});
