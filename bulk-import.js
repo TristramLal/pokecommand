@@ -99,7 +99,7 @@ function bulkReview(){
  [['name','Species','text'],['cp','CP','number'],['currentHP','HP','number'],['atk','Attack IV','number'],['def','Defence IV','number'],['hp','HP IV','number']].map(([key,label,type])=>'<label>'+label+'<input data-bulk-row="'+i+'" data-bulk-field="'+key+'" type="'+type+'" '+(key==='atk'||key==='def'||key==='hp'?'min="0" max="15"':'')+' value="'+esc(p[key]??'')+'"></label>').join('')+'</div><button class="secondary" type="button" onclick="bulkFramePreview('+i+')">View captured frame</button></div>').join('')+
  '<div class="row"><button type="button" onclick="bulkCommit()">Import selected Pokémon</button><button type="button" class="secondary" onclick="bulkStop()">Cancel</button></div>'
 }
-function bulkFramePreview(i){let p=bulkState.rows[i];if(!p)return;let url=URL.createObjectURL(p.blob),win=window.open(url,'_blank');if(!win)alert('Allow pop-ups to view the frame.');setTimeout(()=>URL.revokeObjectURL(url),60000)}
+function bulkFramePreview(i){let p=bulkState.rows[i];if(!p)return;let row=document.querySelector('[data-bulk-include="'+i+'"]')?.closest('.bulk-row');if(!row)return;let old=row.querySelector('.bulk-frame');if(old){old.remove();return}let img=document.createElement('img');img.className='bulk-frame';img.alt='Captured Pokémon appraisal frame';img.style.cssText='width:100%;max-height:550px;object-fit:contain;margin-top:10px;border-radius:10px';let url=URL.createObjectURL(p.blob);img.src=url;img.onload=()=>URL.revokeObjectURL(url);row.appendChild(img)}
 async function bulkCommit(){
  let root=document.getElementById('bulkResults');if(!root||bulkState.busy)return;
  let rows=[],errors=[];
