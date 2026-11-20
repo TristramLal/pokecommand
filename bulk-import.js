@@ -86,7 +86,7 @@ async function bulkReadCPHeader(canvas){
  ctx.drawImage(canvas,Math.round(w*.12),Math.round(h*.015),Math.round(w*.76),Math.round(h*.17),0,0,c.width,c.height);
  let result=await Tesseract.recognize(c,'eng');
  let raw=result.data.text||'';
- let m=raw.match(/C\\s*P\\s*([1-9][\\d,]{2,5})/i);
+ let m=raw.match(/C\s*P\s*([1-9][\d,]{2,5})/i);
  return m?m[1].replace(/,/g,''):'';
 }
 function bulkKey(row){return [String(row.name||'').toLowerCase(),row.cp].join('|')}
