@@ -1,7 +1,7 @@
 /* PokéCommand local video appraisal importer — v0.10.0 */
 let bulkState={file:null,rows:[],busy:false,cancel:false,videoUrl:null,logs:[]};
 function bulkLog(stage,details={}){bulkState.logs.push({time:new Date().toISOString(),stage,...details});if(bulkState.logs.length>1200)bulkState.logs.shift()}
-function bulkDownloadLogs(){let payload={app:'PokéCommand',version:'0.10.2',created:new Date().toISOString(),file:{name:bulkState.file?.name,size:bulkState.file?.size},events:bulkState.logs};let blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='pokecommand-ocr-debug-'+Date.now()+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),15000)}
+function bulkDownloadLogs(){let payload={app:'PokéCommand',version:'0.10.9',created:new Date().toISOString(),file:{name:bulkState.file?.name,size:bulkState.file?.size},events:bulkState.logs};let blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='pokecommand-ocr-debug-'+Date.now()+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),15000)}
 function bulkLogButton(){return '<button type="button" class="secondary" onclick="bulkDownloadLogs()">⬇ Export OCR diagnostic logs</button>'}
 const BULK_DIAG_ENDPOINT='https://pokecommand-diagnostics.tristram-b30.workers.dev/';
 const BULK_TURNSTILE_SITE_KEY='0x4AAAAAAGIMd12eVBssR0IZ';
@@ -29,8 +29,8 @@ async function bulkAutoReport(){
  if(indicator)indicator.textContent='Sending anonymised diagnostic report…';else bulkStatus('Sending anonymised diagnostic report…');
  try{
   let token=await bulkTurnstileToken();
-  let events=bulkState.logs.filter(e=>e.stage==='frame'||e.stage==='scan-error'||e.stage==='scan-finished'||e.stage==='video-metadata'||e.stage==='scan-summary').slice(0,120).map(e=>({time:e.time,stage:e.stage,frame:e.frame,seconds:e.seconds,error:e.error||e.barError,parsed:e.parsed,regions:e.regions?.map(r=>({region:r.region,confidence:r.confidence,error:r.error}))}));
-  let response=await fetch(BULK_DIAG_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:'0.10.8',turnstileToken:token,events})});
+  let events=bulkState.logs.filter(e=>e.stage==='frame'||e.stage==='scan-error'||e.stage==='scan-finished'||e.stage==='video-metadata'||e.stage==='scan-summary').slice(0,120).map(e=>({time:e.time,stage:e.stage,frame:e.frame,seconds:e.seconds,error:e.error||e.barError,parsed:e.parsed,accepted:e.accepted,bars:e.bars,summary:e.stage==='scan-summary'?{samples:e.samples,ocrAttempts:e.ocrAttempts,skippedMotion:e.skippedMotion,candidates:e.candidates}:undefined,regions:e.regions?.map(r=>({region:r.region,confidence:r.confidence,error:r.error}))}));
+  let response=await fetch(BULK_DIAG_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:'0.10.9',turnstileToken:token,events})});
   if(!response.ok)throw Error('Server returned '+response.status);
   if(indicator)indicator.textContent='Diagnostic report sent securely.';else bulkStatus('Diagnostic report sent securely.');
  }catch(e){if(indicator)indicator.textContent='Automatic diagnostics not sent: '+e.message+'. Your scan results remain on this device.';else bulkStatus('Automatic diagnostics not sent: '+e.message)}
@@ -81,13 +81,13 @@ async function bulkOCRRegions(canvas){
 }
 async function bulkReadCPHeader(canvas){
  let w=canvas.width,h=canvas.height,c=document.createElement('canvas');
- c.width=Math.round(w*1.8);c.height=Math.round(h*.16*1.8);
- let ctx=c.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);
- ctx.drawImage(canvas,Math.round(w*.18),Math.round(h*.025),Math.round(w*.64),Math.round(h*.16),0,0,c.width,c.height);
+ c.width=Math.round(w*1.5);c.height=Math.round(h*.17*1.5);
+ let ctx=c.getContext('2d',{willReadFrequently:true});
+ ctx.drawImage(canvas,Math.round(w*.12),Math.round(h*.015),Math.round(w*.76),Math.round(h*.17),0,0,c.width,c.height);
  let result=await Tesseract.recognize(c,'eng');
- let raw=(result.data.text||'').replace(/[, ](?=\\d)/g,'');
- let m=raw.match(/C\\s*P\\s*([1-9]\\d{2,4})/i);
- return m?m[1]:'';
+ let raw=result.data.text||'';
+ let m=raw.match(/C\\s*P\\s*([1-9][\\d,]{2,5})/i);
+ return m?m[1].replace(/,/g,''):'';
 }
 function bulkKey(row){return [String(row.name||'').toLowerCase(),row.cp].join('|')}
 function bulkFileFromCanvas(canvas){return new Promise((resolve,reject)=>canvas.toBlob(blob=>blob?resolve(blob):reject(Error('Could not capture frame')),'image/jpeg',.86))}
@@ -137,14 +137,14 @@ async function bulkAnalyse(){
    let parsed=bulkParseText(raw);
    if(!parsed.cp){try{parsed.cp=await bulkReadCPHeader(canvas)}catch(e){bulkLog('cp-ocr-error',{frame:i,error:e.message})}}
    let validBars=['atk','def','hp'].filter(k=>bars[k]!==''&&bars[k]!==null&&bars[k]!==undefined).length;
-   let confident=!!parsed.cp&&(!!parsed.name||validBars>=2);
+   let confident=!!parsed.name||validBars>=2;
    bulkLog('frame',{frame:i,seconds:t,stable:true,change:+change.toFixed(2),accepted:confident,barError,bars,parsed,regions:regions.map(x=>({region:x.region,confidence:x.confidence,error:x.error,text:(x.text||'').slice(0,1400)}))});
    if(!confident)continue;
    let row={...parsed,...bars,time:t,blob,raw,include:false};
    let key=bulkKey(row);
    if(key===lastKey&&t-lastAt<12)continue;
    let previous=state.rows[state.rows.length-1];
-   if(previous&&bulkKey(previous)===key&&t-previous.time<12)continue;
+   if(previous&&previous.name===row.name&&t-previous.time<3&&(!previous.cp||!row.cp||previous.cp===row.cp)){if(!previous.cp&&row.cp)previous.cp=row.cp;continue;}
    lastKey=key;lastAt=t;
    state.rows.push(row);bulkLog('candidate-kept',{frame:i,seconds:t,name:row.name,cp:row.cp,ivs:[row.atk,row.def,row.hp]});
    if(state.rows.length>=100)break
@@ -161,7 +161,7 @@ async function bulkAnalyse(){
 function bulkReview(){
  let root=document.getElementById('bulkResults');if(!root)return;
  let rows=bulkState.rows;
- if(!rows.length){root.innerHTML='<p class="notice">No confident Pokémon entries were recognised. The scanner checks for stable frames and requires a readable CP plus a species name or appraisal bars.</p>';return}
+ if(!rows.length){root.innerHTML='<p class="notice">No Pokémon names or appraisal bars were recognised. Try a clearer recording.</p>';return}
  root.innerHTML='<h3>Review '+rows.length+' candidates</h3><p class="notice">Recognition is experimental. Names, CP and IVs may be incorrect or blank. All entries are unchecked until you review them. Review each frame before importing. No existing Pokémon will be overwritten.</p>'+
  rows.map((p,i)=>'<div class="bulk-row"><label><input type="checkbox" data-bulk-include="'+i+'" '+(p.include?'checked':'')+'> Import this Pokémon</label><small>Frame at '+p.time.toFixed(1)+'s</small><div class="bulk-grid">'+
  [['name','Species','text'],['cp','CP','number'],['currentHP','HP','number'],['atk','Attack IV','number'],['def','Defence IV','number'],['hp','HP IV','number']].map(([key,label,type])=>'<label>'+label+'<input data-bulk-row="'+i+'" data-bulk-field="'+key+'" type="'+type+'" '+(key==='atk'||key==='def'||key==='hp'?'min="0" max="15"':'')+' value="'+esc(p[key]??'')+'"></label>').join('')+'</div><button class="secondary" type="button" onclick="bulkFramePreview('+i+')">View captured frame</button></div>').join('')+
