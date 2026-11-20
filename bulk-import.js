@@ -1,7 +1,7 @@
 /* PokéCommand local video appraisal importer — v0.10.0 */
 let bulkState={file:null,rows:[],busy:false,cancel:false,videoUrl:null,logs:[]};
 function bulkLog(stage,details={}){bulkState.logs.push({time:new Date().toISOString(),stage,...details});if(bulkState.logs.length>1200)bulkState.logs.shift()}
-function bulkDownloadLogs(){let payload={app:'PokéCommand',version:'0.11.1',created:new Date().toISOString(),file:{name:bulkState.file?.name,size:bulkState.file?.size},events:bulkState.logs};let blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='pokecommand-ocr-debug-'+Date.now()+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),15000)}
+function bulkDownloadLogs(){let payload={app:'PokéCommand',version:'0.11.2',created:new Date().toISOString(),file:{name:bulkState.file?.name,size:bulkState.file?.size},events:bulkState.logs};let blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='pokecommand-ocr-debug-'+Date.now()+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),15000)}
 function bulkLogButton(){return '<button type="button" class="secondary" onclick="bulkDownloadLogs()">⬇ Export OCR diagnostic logs</button>'}
 const BULK_DIAG_ENDPOINT='https://pokecommand-diagnostics.tristram-b30.workers.dev/';
 const BULK_TURNSTILE_SITE_KEY='0x4AAAAAAGIMd12eVBssR0IZ';
@@ -30,7 +30,7 @@ async function bulkAutoReport(){
  try{
   let token=await bulkTurnstileToken();
   let events=bulkState.logs.filter(e=>e.stage==='frame'||e.stage==='scan-error'||e.stage==='scan-finished'||e.stage==='video-metadata'||e.stage==='scan-summary').slice(0,120).map(e=>({time:e.time,stage:e.stage,frame:e.frame,seconds:e.seconds,error:e.error||e.barError,parsed:e.parsed,accepted:e.accepted,bars:e.bars,summary:e.stage==='scan-summary'?{samples:e.samples,ocrAttempts:e.ocrAttempts,skippedMotion:e.skippedMotion,candidates:e.candidates}:undefined,regions:e.regions?.map(r=>({region:r.region,confidence:r.confidence,error:r.error}))}));
-  let response=await fetch(BULK_DIAG_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:'0.11.1',turnstileToken:token,events})});
+  let response=await fetch(BULK_DIAG_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:'0.11.2',turnstileToken:token,events})});
   if(!response.ok)throw Error('Server returned '+response.status);
   if(indicator)indicator.textContent='Diagnostic report sent securely.';else bulkStatus('Diagnostic report sent securely.');
  }catch(e){if(indicator)indicator.textContent='Automatic diagnostics not sent: '+e.message+'. Your scan results remain on this device.';else bulkStatus('Automatic diagnostics not sent: '+e.message)}
@@ -80,14 +80,39 @@ async function bulkOCRRegions(canvas){
  return out
 }
 async function bulkReadCPHeader(canvas){
- let w=canvas.width,h=canvas.height,c=document.createElement('canvas');
- c.width=Math.round(w*1.5);c.height=Math.round(h*.17*1.5);
- let ctx=c.getContext('2d',{willReadFrequently:true});
- ctx.drawImage(canvas,Math.round(w*.12),Math.round(h*.015),Math.round(w*.76),Math.round(h*.17),0,0,c.width,c.height);
- let result=await Tesseract.recognize(c,'eng');
- let raw=result.data.text||'';
- let m=raw.match(/C\s*P\s*([1-9][\d,]{2,5})/i);
- return m?m[1].replace(/,/g,''):'';
+ const w=canvas.width,h=canvas.height;
+ // Try narrow and wide top-centre crops. The CP label is small in portrait video.
+ const crops=[[.26,.025,.48,.105],[.13,.015,.74,.17],[.34,.04,.32,.09]];
+ const votes=new Map();
+ for(const [rx,ry,rw,rh] of crops){
+  const c=document.createElement('canvas');
+  const cw=Math.round(w*rw),ch=Math.round(h*rh);
+  c.width=cw*3;c.height=ch*3;
+  const ctx=c.getContext('2d',{willReadFrequently:true});
+  ctx.drawImage(canvas,Math.round(w*rx),Math.round(h*ry),cw,ch,0,0,c.width,c.height);
+  const original=ctx.getImageData(0,0,c.width,c.height);
+  for(const mode of ['original','contrast']){
+   ctx.putImageData(original,0,0);
+   if(mode==='contrast'){
+    const image=ctx.getImageData(0,0,c.width,c.height);
+    for(let i=0;i<image.data.length;i+=4){
+     const grey=.299*image.data[i]+.587*image.data[i+1]+.114*image.data[i+2];
+     const v=grey>145?255:0;
+     image.data[i]=image.data[i+1]=image.data[i+2]=v;
+    }
+    ctx.putImageData(image,0,0);
+   }
+   const result=await Tesseract.recognize(c,'eng',{tessedit_pageseg_mode:'6'});
+   const raw=result.data.text||'';
+   const match=raw.match(/C\s*P[\s:.,-]*([1-9][\d,]{2,5})/i);
+   if(match){
+    const cp=match[1].replace(/,/g,'');
+    if(+cp>=10&&+cp<=99999)votes.set(cp,(votes.get(cp)||0)+2);
+   }
+  }
+ }
+ const ranked=[...votes.entries()].sort((a,b)=>b[1]-a[1]);
+ return ranked.length===1||ranked[0]?.[1]>ranked[1]?.[1]?ranked[0]?.[0]||'':'';
 }
 function bulkKey(row){return [String(row.name||'').toLowerCase(),row.cp].join('|')}
 function bulkFileFromCanvas(canvas){return new Promise((resolve,reject)=>canvas.toBlob(blob=>blob?resolve(blob):reject(Error('Could not capture frame')),'image/jpeg',.86))}
@@ -142,9 +167,14 @@ async function bulkAnalyse(){
    if(!confident)continue;
    let row={...parsed,...bars,time:t,blob,raw,include:false};
    let key=bulkKey(row);
-   if(key===lastKey&&t-lastAt<12)continue;
    let previous=state.rows[state.rows.length-1];
-   if(previous&&previous.name===row.name&&t-previous.time<3&&(!previous.cp||!row.cp||previous.cp===row.cp)){if(!previous.cp&&row.cp)previous.cp=row.cp;if(!previous.currentHP&&row.currentHP)previous.currentHP=row.currentHP;continue;}
+   if(previous&&previous.name===row.name&&t-previous.time<4&&(!previous.cp||!row.cp||previous.cp===row.cp)){
+    if(!previous.cp&&row.cp)previous.cp=row.cp;
+    if(!previous.currentHP&&row.currentHP)previous.currentHP=row.currentHP;
+    bulkLog('frame-merged',{seconds:t,cpRecovered:!!row.cp});
+    continue;
+   }
+   if(key===lastKey&&t-lastAt<5)continue;
    lastKey=key;lastAt=t;
    state.rows.push(row);bulkLog('candidate-kept',{frame:i,seconds:t,name:row.name,cp:row.cp,ivs:[row.atk,row.def,row.hp]});
    if(state.rows.length>=100)break
