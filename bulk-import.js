@@ -1,7 +1,7 @@
 /* PokéCommand local video appraisal importer — v0.10.0 */
 let bulkState={file:null,rows:[],busy:false,cancel:false,videoUrl:null,logs:[]};
 function bulkLog(stage,details={}){bulkState.logs.push({time:new Date().toISOString(),stage,...details});if(bulkState.logs.length>1200)bulkState.logs.shift()}
-function bulkDownloadLogs(){let payload={app:'PokéCommand',version:'0.10.9',created:new Date().toISOString(),file:{name:bulkState.file?.name,size:bulkState.file?.size},events:bulkState.logs};let blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='pokecommand-ocr-debug-'+Date.now()+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),15000)}
+function bulkDownloadLogs(){let payload={app:'PokéCommand',version:'0.11.0',created:new Date().toISOString(),file:{name:bulkState.file?.name,size:bulkState.file?.size},events:bulkState.logs};let blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='pokecommand-ocr-debug-'+Date.now()+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),15000)}
 function bulkLogButton(){return '<button type="button" class="secondary" onclick="bulkDownloadLogs()">⬇ Export OCR diagnostic logs</button>'}
 const BULK_DIAG_ENDPOINT='https://pokecommand-diagnostics.tristram-b30.workers.dev/';
 const BULK_TURNSTILE_SITE_KEY='0x4AAAAAAGIMd12eVBssR0IZ';
@@ -30,7 +30,7 @@ async function bulkAutoReport(){
  try{
   let token=await bulkTurnstileToken();
   let events=bulkState.logs.filter(e=>e.stage==='frame'||e.stage==='scan-error'||e.stage==='scan-finished'||e.stage==='video-metadata'||e.stage==='scan-summary').slice(0,120).map(e=>({time:e.time,stage:e.stage,frame:e.frame,seconds:e.seconds,error:e.error||e.barError,parsed:e.parsed,accepted:e.accepted,bars:e.bars,summary:e.stage==='scan-summary'?{samples:e.samples,ocrAttempts:e.ocrAttempts,skippedMotion:e.skippedMotion,candidates:e.candidates}:undefined,regions:e.regions?.map(r=>({region:r.region,confidence:r.confidence,error:r.error}))}));
-  let response=await fetch(BULK_DIAG_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:'0.10.9',turnstileToken:token,events})});
+  let response=await fetch(BULK_DIAG_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:'0.11.0',turnstileToken:token,events})});
   if(!response.ok)throw Error('Server returned '+response.status);
   if(indicator)indicator.textContent='Diagnostic report sent securely.';else bulkStatus('Diagnostic report sent securely.');
  }catch(e){if(indicator)indicator.textContent='Automatic diagnostics not sent: '+e.message+'. Your scan results remain on this device.';else bulkStatus('Automatic diagnostics not sent: '+e.message)}
@@ -144,7 +144,7 @@ async function bulkAnalyse(){
    let key=bulkKey(row);
    if(key===lastKey&&t-lastAt<12)continue;
    let previous=state.rows[state.rows.length-1];
-   if(previous&&previous.name===row.name&&t-previous.time<3&&(!previous.cp||!row.cp||previous.cp===row.cp)){if(!previous.cp&&row.cp)previous.cp=row.cp;continue;}
+   if(previous&&previous.name===row.name&&t-previous.time<3&&(!previous.cp||!row.cp||previous.cp===row.cp)){if(!previous.cp&&row.cp)previous.cp=row.cp;if(!previous.currentHP&&row.currentHP)previous.currentHP=row.currentHP;continue;}
    lastKey=key;lastAt=t;
    state.rows.push(row);bulkLog('candidate-kept',{frame:i,seconds:t,name:row.name,cp:row.cp,ivs:[row.atk,row.def,row.hp]});
    if(state.rows.length>=100)break
